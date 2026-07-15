@@ -1,0 +1,3 @@
+1. Double click shortcut named "RUN THIS".
+2. Select folder where you have the pictures.
+3. Pictures will be put in folder with same name as origin folder but with "_Numbered" added to it.
