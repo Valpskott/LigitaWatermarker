@@ -10,6 +10,9 @@ $DEFAULT_OPACITY      = 0.60
 $FILE_TYPES           = "png", "jpg", "bmp"
 
 # ─── Helpers ───────────────────────────────────────────────────────
+
+$scriptRoot      = Split-Path -Parent $PSCommandPath
+
 function Get-ImageDimensions($filePath) {
     $output = & magick identify $filePath
     if ($output -match '(\d+)x(\d+)') {
@@ -19,9 +22,6 @@ function Get-ImageDimensions($filePath) {
     }
 }
 
-function Resolve-ScriptRoot {
-    Split-Path -Parent $MyInvocation.MyCommand.Path
-}
 
 # ─── Build Form ────────────────────────────────────────────────────
 $form = New-Object System.Windows.Forms.Form
@@ -56,14 +56,44 @@ $browseBtn.Text     = "&Browse..."
 $form.Controls.Add($browseBtn)
 
 $selPath = ""
+
+# ── Remember last folder via sidecar state file ───────────────────────
+$stateFilePath = Join-Path $scriptRoot ".state.json"
+$lastKnownFolder = ""
+$lastDoNumbers   = $true    # checkbox defaults
+$lastDoWatermark  = $false
+if (Test-Path $stateFilePath) {
+    try {
+        $saved = Get-Content -Path $stateFilePath -Raw | ConvertFrom-Json
+        if ($saved.lastFolder -and (Test-Path $saved.lastFolder -PathType Container)) {
+            $lastKnownFolder = $saved.lastFolder
+        }
+        # Restore checkboxes only when a valid path exists (file is well-formed)
+        if ($saved.doNumbers       -ne $null) { $lastDoNumbers   = [bool]$saved.doNumbers }
+        if ($saved.doWatermark     -ne $null) { $lastDoWatermark = [bool]$saved.doWatermark }
+    } catch { $lastKnownFolder = "" }
+}
+
 $browseBtn.Add_Click({
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
     $dlg.Description         = "Select folder with pictures"
-    $dlg.RootFolder          = $([Environment+SpecialFolder]::Desktop)
     $dlg.ShowNewFolderButton = $false
+    if ($script:lastKnownFolder -and (Test-Path $script:lastKnownFolder -PathType Container)) {
+        $dlg.SelectedPath = $script:lastKnownFolder
+    } else {
+        $dlg.RootFolder = $([Environment+SpecialFolder]::Desktop)
+    }
     if ($dlg.ShowDialog() -eq $([System.Windows.Forms.DialogResult]::OK)) {
         $script:selPath     = $dlg.SelectedPath
         $folderLabel.Text   = $selPath
+        # persist selection + checkbox state for next run
+        try {
+            @{
+                lastFolder  = $dlg.SelectedPath
+                doNumbers   = $chkNumbers.Checked
+                doWatermark = $chkWatermark.Checked
+            } | ConvertTo-Json | Set-Content -Path $script:stateFilePath -Force
+        } catch {}
     }
 })
 
@@ -78,13 +108,13 @@ $form.Controls.Add($optLbl); New-Row
 $chkNumbers = New-Object System.Windows.Forms.CheckBox
 $chkNumbers.Location = MkPt ([int]$script:layoutX + 10) $layoutCursorY
 $chkNumbers.Text     = "&Add Numbers"
-$chkNumbers.Checked   = $true
+$chkNumbers.Checked   = $lastDoNumbers
 $form.Controls.Add($chkNumbers); New-Row
 
 $chkWatermark = New-Object System.Windows.Forms.CheckBox
 $chkWatermark.Location = MkPt ([int]$script:layoutX + 10) $layoutCursorY
 $chkWatermark.Text     = "&Add Watermark"
-$chkWatermark.Checked   = $false
+$chkWatermark.Checked   = $lastDoWatermark
 $form.Controls.Add($chkWatermark); New-Row
 
 # ── Settings section ────────────────────────────────────────────────
@@ -186,9 +216,8 @@ $opacity = [math]::Max(0.0, [math]::Min(1.0, $opacity))
 # ── Pre-flight checks ──────────────────────────────────────────────
 
 # Resolve watermark assets relative to script location (needed by validation)
-$scriptRoot = Resolve-ScriptRoot
 if ($doWatermark) {
-    $waterDir   = Join-Path $scriptRoot "add_watermark_to_pics\angled_watermark"
+    $waterDir   = Join-Path $scriptRoot "angled_watermark"
     $wmShaded   = Join-Path $waterDir "watermark-shaded.png"
     $wmOutline  = Join-Path $waterDir "watermark-outline.png"
 }
@@ -196,31 +225,29 @@ if ($doWatermark) {
 try {
     Get-Command magick -ErrorAction Stop | Out-Null
 } catch {
-    [System.Windows.Forms.MessageBox]::Show("magick (ImageMagick) not found on PATH.\nPlease install ImageMagick and ensure 'magick' is available.", "Missing dependency")
+    [System.Windows.Forms.MessageBox]::Show("magick (ImageMagick) not found on PATH.
+Please install ImageMagick and ensure 'magick' is available.", "Missing dependency")
     exit
 }
 
 if ($doWatermark -and (-not (Test-Path $wmShaded) -or -not (Test-Path $wmOutline))) {
     [System.Windows.Forms.MessageBox]::Show(
-        "Watermark assets not found.\nExpected:\n  $wmShaded\n  $wmOutline",
+        "Watermark assets not found.
+Expected:
+  $wmShaded
+  $wmOutline",
         "Missing files"
     )
     exit
 }
 
-# ── Output directory suffix based on chosen options ──────────────────
-$suffix = switch (true) {
-    { $doNumbers -and $doWatermark } { "_Processed"   }
-    { $doNumbers                   } { "_Numbered"    }
-    { $doWatermark                 } { "_Watermarked" }
+# ── Output directory ────────────────────────────────────────────────
+$inDir  = $selPath
+$outDir = Join-Path $inDir "Processed"
+
+if ($outDir.StartsWith($inDir)) {
+    if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
 }
-
-$inDir     = $selPath
-$parentDir = Split-Path $inDir -Parent
-$baseDir   = Split-Path $inDir -Leaf
-$outDir    = Join-Path $parentDir "${baseDir}${suffix}"
-
-if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
 New-Item -ItemType Directory -Path $outDir | Out-Null
 
 # ── Process files ───────────────────────────────────────────────────
@@ -236,15 +263,21 @@ foreach ($file in Get-ChildItem $inDir -File | Sort-Object Name) {
     if ($FILE_TYPES -notcontains $ext) { continue }
 
     $srcFile  = $file.FullName
-    $num      = "{0:D$digits}" -f $seq
-    $dstName  = "${num}-${file.BaseName.ToLower()}.jpg"
+    # output filename: numbered -> 01-OriginalName.jpg | watermark-only -> OriginalName.ext unchanged
+    $num = "{0:D$digits}" -f $seq
+    $origBasename = $file.BaseName   # pull value out before inner scope
+    if ($doNumbers) {
+        $dstName = "${num}-${origBasename}.jpg"
+    } else {
+        $dstName = $file.Name
+    }
     $dstFile  = Join-Path $outDir $dstName
 
-    $tmpResize  = Join-Path $outDir "__tmp_resize.jpg"
-    $tmpNumbers = Join-Path $outDir "__tmp_numbers.jpg"
-    $tmpWm1     = Join-Path $outDir "__tmp_wm1.jpg"
+    $tmpResize  = Join-Path $outDir "__tmp_resize.png"
+    $tmpNumbers = Join-Path $outDir "__tmp_numbers.png"
+    $tmpWm1     = Join-Path $outDir "__tmp_wm1.png"  # PNG preserves watermark alpha for SoftLight compose
     $tmpWm2     = Join-Path $outDir "__tmp_wm2.png"
-    $tmpSliced  = Join-Path $outDir "__tmp_sliced.jpg"
+    $tmpSliced  = Join-Path $outDir "__tmp_sliced.png"
 
     Write-Host " [${num}/${total}] $($file.Name)"
     $statusLbl.Text = "[${num}/${total}] $($file.Name)"
@@ -271,8 +304,13 @@ foreach ($file in Get-ChildItem $inDir -File | Sort-Object Name) {
         }
 
         if ($doWatermark) {
+            # When no numbering, resize source photo here to a safe slot.
+            # Do NOT use $tmpWm1 for the resized photo — it will be
+            # overwritten with the shaded watermark on the next line.
+            # This mirrors the old single-invocation magick convert approach
+            # where resize + composite happened in ONE command.
             if (-not $doNumbers) {
-                magick "$tmpResize" -resize $res "$tmpWm1"
+                magick "$tmpResize" -resize $res "$tmpSliced"
                 Remove-Item $tmpResize
             }
 
@@ -288,13 +326,18 @@ foreach ($file in Get-ChildItem $inDir -File | Sort-Object Name) {
                 "$tmpWm2"
 
             if ($doNumbers) {
-                $wlInput = "$tmpNumbers"
+                # Source photo is in $tmpNumbers (already resized + numbered)
+                magick "$tmpNumbers" "$tmpWm1" -gravity center -compose SoftLight `
+                    -composite "$tmpSliced"
+                magick "$tmpSliced" "$tmpWm2" -gravity center -compose HardLight `
+                    -composite "$dstFile"
             } else {
-                $wlInput = "$tmpWm1"
+                # Source photo is in $tmpSliced (resized but not clobbered)
+                magick "$tmpSliced" "$tmpWm1" -gravity center -compose SoftLight `
+                    -composite "$tmpNumbers"
+                magick "$tmpNumbers" "$tmpWm2" -gravity center -compose HardLight `
+                    -composite "$dstFile"
             }
-
-            magick $wlInput "$tmpWm1" -gravity center -compose SoftLight -composite "$tmpSliced"
-            magick "$tmpSliced" "$tmpWm2" -gravity center -compose HardLight -composite "$dstFile"
 
             Remove-Item $tmpWm1, $tmpWm2, $tmpSliced -ErrorAction SilentlyContinue
         } else {
