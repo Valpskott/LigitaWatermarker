@@ -1,3 +1,5 @@
 {
+    "doNumbers":  true,
+    "doWatermark":  true,
     "lastFolder":  "C:\\pics\\Flowers"
 }

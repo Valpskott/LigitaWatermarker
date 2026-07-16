@@ -9,47 +9,26 @@ Saved `doNumbers` and `doWatermark` bools into `.state.json`. Restored at startu
 
 ---
 
-## [FEATURE] In-window terminal for processing output
-
-Render a read-only RichTextBox between the settings section and the Cancel/Process buttons so all progress, warnings, and "Done." appear in the window itself rather than the outer shell.
+## [FEATURE] In-window terminal for processing output — FIXED ✓
 
 **File:** `run_me.ps1`
 
-### Implementation plan
-
-1. **Add RichTextBox below settings row** (~line 157, after `$statusLbl / New-Row 5`). 490 px wide, ~85 px tall, dark background (`#1e1e1e`), white foreground, Consolas/9pt, read-only, vertical scrollbar.
-
-2. **Create `Log-Output` helper** — appends a line to `$logBox`, auto-scrolls to end. Supports two severity levels:
-   - `info` (default, white): per-file progress `[num/total] file.jpg`, "Done." summary
-   - `warn` (yellow): skip/error lines
-
-3. **Replace all logging in the processing loop**:
-   - `Write-Host "[${num}/${total}] $($file.Name)"` → `Log-Output "[${num}/${total}] $($file.Name)"`
-   - `Write-Warning "Skipping ..."` → `Log-Output "WARNING: Skipping ..." warn`
-   - `Write-Host "Done. Output: $outDir"` → `Log-Output "Done. Output: $outDir"`
-
-4. **Increase form height** from 430 to ~540 px to accommodate the terminal area.
+Added a dark-themed read-only RichTextBox (`#1e1e1e` bg, white/Consolas 9pt) between the settings row and the Cancel/Process buttons. Form height increased from 430 → 540 px.
+- Created `Log-Output` helper accepting message + severity level (`info`=white, `warn`=yellow, `error`=red), auto-scrolls to end
+- Replaced all `Write-Host` calls with `Log-Output`
+- Replaced `Write-Warning` in the catch block with `Log-Output <msg> warn`
 
 ---
 
-## [FEATURE] Keep UI open after processing (re-select & re-process) / Rename Run → Process
-
-After Processing a folder, the window should stay alive so the user can Browse another folder and Process again without relaunching. Also change "Run" button label to "Process".
+## [FEATURE] Keep UI open after processing (re-select & re-process) / Rename Run → Process — FIXED ✓
 
 **File:** `run_me.ps1`
 
-### Implementation plan
-
-1. **Extract everything after `$form.ShowDialog()` into `function Process-Folder {}`**. Includes: checkbox validation, numeric setting parse, pre-flight checks (magick PATH, watermark assets), output dir creation, per-file processing loop. Reads live values from form controls (`$chkNumbers.Checked`, `$txtWidth.Text`, etc.).
-
-2. **Remove `DialogResult` off Run button**. Swap for a click handler:
-   - On enter: disable Browse + Process buttons, clear terminal, call `Process-Folder`
-   - On exit (finally): re-enable buttons, leave terminal output visible
-   - Rename `$runBtn.Text = "&Process"` instead of `"&Run"`
-
-3. **Cancel button**: keep its `DialogResult::Cancel` so it closes the form immediately (even mid-process; current iteration finishes gracefully via finally cleanup).
-
-4. **Replace `$result = $form.ShowDialog(); if ($result -ne OK) exit`** with plain `$form.ShowDialog()` — the Cancel button or X close naturally; no upfront exit needed since processing now lives inside the click handler.
+Extracted everything after `$form.ShowDialog()` into `function Process-Folder {}`. The Process button now calls this via an `Add_Click` handler instead of closing the dialog on `DialogResult::OK`.
+- On entry: disables all interactive controls (Browse, Process, checkboxes, text boxes), clears the terminal
+- On exit (`finally`): re-enables all controls; terminal output stays visible for inspection
+- Cancel / X still closes immediately via `DialogResult::Cancel`
+- Button renamed from "Run" to "Process"
 
 ---
 
